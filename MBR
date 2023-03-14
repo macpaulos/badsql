@@ -1,0 +1,633 @@
+/****** Object:  View [glb_ops_bkg_stg].[vBooking_MBR]    Script Date: 14/03/2023 15:44:42 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER VIEW [glb_ops_bkg_stg].[vBooking_MBR]
+AS
+with Paramdate AS(
+
+SELECT        DATEADD(month, - 7, eomonth(GETDATE())) AS dt_from/* since when do we need data*/ , cast(GETDATE() AS date) AS dt_to/* since when do we need data*/ 
+
+),
+
+MAINKPI AS
+    (SELECT        [Date] = max([Date])
+      FROM            [glb_ops_bkg_stg].[MainKPI]), SenCall AS
+    (SELECT        [Call Day] = max([Call Day])
+      FROM            [glb_ops_bkg_stg].[SeniorDetails]), SenCallDate AS
+    (SELECT        MINForSC = IIF([Date] > [Call Day], [Call Day], [Date])
+      FROM            MAINKPI, SenCall), /*------------------------------ROW 5	CPI/H	Overall---------------------------------------------------------------- */ CPH11 AS
+    (SELECT        M.[sitecode], [Language] = [Hire Language], [LOB] = CASE WHEN [jobkey] IN ('Outsourced EPS Guest Executive', 'Outsourced EPS Guest Specialist', 'CS Guest Specialist') AND UNB.LOB IS NOT NULL 
+                                THEN UNB.LOB WHEN [jobkey] IN ('Outsourced EPS Guest Executive', 'Outsourced EPS Guest Specialist', 'CS Guest Specialist') THEN 'CSG' WHEN [jobkey] IN ('Outsourced EPS Partner Specialist') THEN 'CSP' ELSE NULL 
+                                END, M.[Date], [EOMONTH] = EOMONTH(M.[date]), YYYYQQ, M.staff_id, [CPH_contacts] = SUM([cpi_contacts]), [productive_time] = sum([productive_time]), [acw_denominator] = SUM([acw_denominator]), 
+                                acw_numerator = sum(acw_numerator)
+      FROM            [glb_ops_bkg_stg].[MainKPI] M LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_Date] D ON D .[Date] = M.[Date] LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_Staff_ID] ID ON ID.Staff_ID = M.staff_id LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_HireLangHistorical] HL ON HL.Staff_id = M.[staff_id] AND cast(M.[Date] AS date) >= [Effective Date] AND cast(M.[Date] AS date) < [Expiration Date] LEFT JOIN
+                                [glb_ops_bkg_rep].[UDV_SupportMatrix_LOB_Unbabel] UNB ON UNB.[LanguageCode] = [Hire Language] AND UNB.[Sitecode] = M.[Sitecode] AND M.[Date] >= UNB.[ValidFrom] AND M.[Date] < UNB.[ValidTo]
+      WHERE        M.[date] >=
+                                    (SELECT        dt_from
+                                      FROM            ParamDate) AND M.[date] <=
+                                    (SELECT        dt_to
+                                      FROM            ParamDate) AND datediff(day, [First Hire Date], M.[Date]) > 21 AND ID.[Latest Manager] NOT IN ('Mario van Tongeren', 'Marit de Wolf') /*!!! Filterig out these 2 managers and their teams.*/ AND 
+                                ID.[Latest Name] NOT IN ('Mario van Tongeren', 'Marit de Wolf')
+      GROUP BY M.[sitecode], [Hire Language], [jobkey], UNB.LOB, M.[Date], EOMONTH(M.[date]), YYYYQQ, M.staff_id), CPH2 AS
+    (SELECT        [sitecode], [Language], [LOB], [EOMONTH], YYYYQQ, [CPH_contacts] = SUM([CPH_contacts]), [productive_time] = sum([productive_time])
+      FROM            CPH11 A
+      WHERE        LOB IS NOT NULL AND [Language] IS NOT NULL
+      GROUP BY [sitecode], [Language], [LOB], [EOMONTH], YYYYQQ), WithtargetsCPH AS
+    (SELECT        CP.[sitecode], CP.[Language], CP.[LOB], [EOMONTH], [CPI/H] = CASE WHEN [productive_time] > 0 THEN [CPH_contacts] / [productive_time] ELSE NULL END, [productive_time], [Target], 
+                                [Status Vs Target] = CASE WHEN [productive_time] > 0 AND ([CPH_contacts] / [productive_time]) > [Target] THEN 1 ELSE 0 END
+      FROM            CPH2 CP LEFT JOIN
+                                    (SELECT        [Quarter], [Sitecode], [LOB], [Language], [Target]
+                                      FROM            [glb_ops_bkg_rep].[Dim_Target_CPI] CT LEFT JOIN
+                                                                [glb_ops_bkg_rep].[Dim_Language] LN ON CT.LanguageCode = LN.Languagecode) TG ON TG.[Language] = CP.[Language] AND CP.LOB = TG.LOB AND CP.[sitecode] = TG.[sitecode] AND 
+                                TG.[Quarter] = CP.YYYYQQ), row5 AS
+    (SELECT        [Sitecode], [Language], [LOB], [Month] = [EOMONTH], [RowSort] = 5, [RowCat] = 'CPI/H', [RowValue] = 'Overall', [Result] = [CPI/H], [Denominator] = [productive_time], [Target] = [Target], [Status Vs Target]
+      FROM            WithtargetsCPH), /*------------------------------ROW 7	CPI/H NH impact	---------------------------------------------------------------- */ CPH1 AS
+    (SELECT        [sitecode], [Language], [LOB], [EOMONTH], YYYYQQ, [Tenure], [CPH_contacts] = SUM([CPH_contacts]), [productive_time] = sum([productive_time])
+      FROM            (SELECT        M.[sitecode], [Language] = [Hire Language], [LOB] = CASE WHEN [jobkey] IN ('Outsourced EPS Guest Executive', 'Outsourced EPS Guest Specialist', 'CS Guest Specialist') AND UNB.LOB IS NOT NULL 
+                                                          THEN UNB.LOB WHEN [jobkey] IN ('Outsourced EPS Guest Executive', 'Outsourced EPS Guest Specialist', 'CS Guest Specialist') THEN 'CSG' WHEN [jobkey] IN ('Outsourced EPS Partner Specialist') 
+                                                          THEN 'CSP' ELSE NULL END, [EOMONTH] = EOMONTH(M.[date]), YYYYQQ, [First Hire Date], [Tenure] = CASE WHEN datediff(day, [First Hire Date], M.[Date]) > 90 THEN 'Tenured' ELSE 'New Hire' END, 
+                                                          [CPH_contacts] = SUM([cpi_contacts]), [productive_time] = sum([productive_time])
+                                FROM            [glb_ops_bkg_stg].[MainKPI] M LEFT JOIN
+                                                          [glb_ops_bkg_rep].[Dim_Date] D ON D .[Date] = M.[Date] LEFT JOIN
+                                                          [glb_ops_bkg_rep].[Dim_HireLangHistorical] HL ON HL.Staff_id = M.[staff_id] AND cast(M.[Date] AS date) >= HL.[Effective Date] AND cast(M.[Date] AS date) < HL.[Expiration Date] LEFT JOIN
+                                                          [glb_ops_bkg_rep].[Dim_Staff_ID] ID ON ID.[Staff_ID] = M.[staff_id] LEFT JOIN
+                                                          [glb_ops_bkg_rep].[UDV_SupportMatrix_LOB_Unbabel] UNB ON UNB.[LanguageCode] = [Hire Language] AND UNB.[Sitecode] = M.[Sitecode] AND M.[Date] >= UNB.[ValidFrom] AND 
+                                                          M.[Date] < UNB.[ValidTo]
+                                WHERE        M.[date] >=
+                                                              (SELECT        dt_from
+                                                                FROM            ParamDate) AND M.[date] <=
+                                                              (SELECT        dt_to
+                                                                FROM            ParamDate) AND datediff(day, [First Hire Date], M.[Date]) > 21 AND ID.[Latest Manager] NOT IN ('Mario van Tongeren', 'Marit de Wolf') /*!!! Filterig out these 2 managers and their teams.*/ AND 
+                                                          ID.[Latest Name] NOT IN ('Mario van Tongeren', 'Marit de Wolf')
+                                GROUP BY EOMONTH(M.[date]), M.[Date], M.[sitecode], [Hire Language], [jobkey], YYYYQQ, [First Hire Date], UNB.LOB) A
+      WHERE        LOB IS NOT NULL AND [Language] IS NOT NULL
+      GROUP BY [sitecode], [Language], [LOB], [EOMONTH], YYYYQQ, Tenure), ResultsAll AS
+    (SELECT        CP.[sitecode], CP.[Language], CP.[LOB], [EOMONTH], [CPI/H] = CASE WHEN sum([productive_time]) > 0 THEN sum([CPH_contacts]) / sum([productive_time]) ELSE NULL END
+      FROM            CPH1 CP
+      GROUP BY CP.[sitecode], CP.[Language], CP.[LOB], [EOMONTH]), TENURERESULTS AS
+    (SELECT        CP.[sitecode], CP.[Language], CP.[LOB], [EOMONTH], [CPI/H Tenured] = CASE WHEN sum([productive_time]) > 0 THEN sum([CPH_contacts]) / sum([productive_time]) ELSE NULL END
+      FROM            CPH1 CP
+      WHERE        Tenure = 'Tenured'
+      GROUP BY CP.[sitecode], CP.[Language], CP.[LOB], [EOMONTH]), row7 AS
+    (SELECT        RA.[Sitecode], RA.[Language], RA.[LOB], [Month] = RA.[EOMONTH], [RowSort] = 7, [RowCat] = 'CPI/H', [RowValue] = 'NH impact', [Result] = [CPI/H] - [CPI/H Tenured], [Denominator] = NULL, [Target] = NULL, 
+                                [Status Vs Target] = NULL
+      FROM            ResultsAll RA LEFT JOIN
+                                TENURERESULTS TN ON RA.sitecode = TN.sitecode AND RA.lob = TN.LOB AND RA.[Language] = TN.[Language] AND RA.[EOMONTH] = TN.[EOMONTH]), 
+/*------------------------------ROW 8-10	PSAT	---------------------------------------------------------------- */ PSAT1 AS
+    (SELECT        [Sitecode], LOB, [language], [MONTH] = EOMONTH(M.[date]), [Tenure], YYYYQQ, [psat_denominator] = cast(SUM([psat_denominator]) AS float), [psat_numerator] = cast(SUM([psat_numerator]) AS float)
+      FROM            [glb_ops_bkg_stg].[v_PSAT_LanguageMatrixView] M LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_Date] D ON D .[Date] = M.[Date] LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_Staff_ID] ID ON ID.[Staff_ID] = M.[staff_id]
+      WHERE        M.[date] >=
+                                    (SELECT        dt_from
+                                      FROM            ParamDate) AND M.[date] <=
+                                    (SELECT        dt_to
+                                      FROM            ParamDate) AND [Tenure Days] > 21 AND ID.[Latest Manager] NOT IN ('Mario van Tongeren', 'Marit de Wolf') /*!!! Filterig out these 2 managers and their teams.*/ AND 
+                                ID.[Latest Name] NOT IN ('Mario van Tongeren', 'Marit de Wolf')
+      GROUP BY [Sitecode], LOB, [language], EOMONTH(M.[date]), [Tenure], YYYYQQ), PSATTenured AS
+    (SELECT        [Sitecode], [LOB], [language], [MONTH], [PSAT Tenured] = CASE WHEN SUM([psat_denominator]) > 0 THEN SUM([psat_numerator]) / SUM([psat_denominator]) ELSE NULL END
+      FROM            PSAT1
+      WHERE        [Tenure] IN ('New Tenured', 'Tenured')
+      GROUP BY [Sitecode], [LOB], [language], [MONTH]), PSATALL AS
+    (SELECT        [Sitecode], LOB, [language], [MONTH], YYYYQQ, [PSAT] = CASE WHEN SUM([psat_denominator]) > 0 THEN SUM([psat_numerator]) / SUM([psat_denominator]) ELSE NULL END, [psat_denominator] = SUM([psat_denominator])
+      FROM            PSAT1
+      GROUP BY [Sitecode], LOB, [language], [MONTH], YYYYQQ), ROW8 AS
+    (SELECT        [Sitecode] = PS.[Sitecode], [Language] = PS.[language], [LOB] = PS.LOB, [Month] = PS.MONTH, [RowSort] = 8, [RowCat] = 'PSAT', [RowValue] = 'Overall', [Result] = [PSAT], [Denominator] = [psat_denominator], [Target], 
+                                [Status Vs Target] = CASE WHEN [PSAT] > 0 AND Target > 0 AND [PSAT] > [Target] THEN 1 ELSE 0 END
+      FROM            PSATALL PS LEFT JOIN
+                                    (SELECT        [Quarter], [Sitecode], [LOB], [Language] = [Language], [Target]
+                                      FROM            [glb_ops_bkg_rep].[Dim_Target_PSAT] CT LEFT JOIN
+                                                                [glb_ops_bkg_rep].[Dim_Language] LN ON CT.LanguageCode = LN.Languagecode) TG ON TG.Language = PS.[Language] AND PS.LOB = TG.LOB AND PS.[sitecode] = TG.[sitecode] AND 
+                                TG.[Quarter] = PS.YYYYQQ), ROW10 AS
+    (SELECT        [Sitecode] = PS.[Sitecode], [Language] = PS.[language], [LOB] = PS.LOB, [Month] = PS.[Month], [RowSort] = 10, [RowCat] = 'PSAT', [RowValue] = 'NH impact', [Result] = [PSAT] - [PSAT Tenured], [Denominator] = NULL, 
+                                [Target] = NULL, [Status Vs Target] = NULL
+      FROM            PSATALL PS LEFT JOIN
+                                psatTenured TN ON PS.sitecode = TN.sitecode AND PS.[language] = TN.[language] AND PS.lob = TN.LOB AND PS.[Month] = TN.[Month]), 
+/*------------------------------ROW 11-13-14-16	CSAT	---------------------------------------------------------------- */ CSAT1 AS
+    (SELECT        [Sitecode], [LOB], [language] = [language], [MONTH] = EOMONTH(M.[date]), [channel], YYYYQQ, [Tenure], [csat_denominator] = cast(SUM([csat_denominator]) AS float), [csat_numerator] = cast(SUM([csat_numerator]) AS float)
+      FROM            [glb_ops_bkg_stg].[v_CSAT_CSATDailyView_Test] M LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_Date] D ON D .[Date] = M.[Date] LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_Staff_ID] ID ON ID.[Staff_ID] = M.staff_id
+      WHERE        [type] = 'Touchpoint' AND M.[date] >=
+                                    (SELECT        dt_from
+                                      FROM            ParamDate) AND M.[date] <=
+                                    (SELECT        dt_to
+                                      FROM            ParamDate) AND [Tenure Days] > 21 AND ID.[Latest Manager] NOT IN ('Mario van Tongeren', 'Marit de Wolf') /* !!! Filterig out these 2 managers and their teams.*/ AND 
+                                ID.[Latest Name] NOT IN ('Mario van Tongeren', 'Marit de Wolf')
+      GROUP BY [Sitecode], LOB, [language], EOMONTH(M.[date]), [channel], YYYYQQ, [Tenure]), CSATPHONETenured AS
+    (SELECT        [Sitecode], LOB, [language], [MONTH], [CSAT PHONE Tenured] = CASE WHEN SUM([csat_denominator]) > 0 THEN SUM([csat_numerator]) / SUM([csat_denominator]) ELSE NULL END
+      FROM            CSAT1
+      WHERE        [Tenure] IN ('New Tenured', 'Tenured') AND [channel] = 'Phone'
+      GROUP BY [Sitecode], LOB, [language], [MONTH]), CSATPHONEALL AS
+    (SELECT        [Sitecode], LOB, [language], [MONTH], YYYYQQ, [CSAT Phone] = CASE WHEN SUM([csat_denominator]) > 0 THEN SUM([csat_numerator]) / SUM([csat_denominator]) ELSE NULL END, 
+                                [CSAT Phone_denominator] = SUM([csat_denominator])
+      FROM            CSAT1
+      WHERE        [channel] = 'Phone'
+      GROUP BY [Sitecode], YYYYQQ, LOB, [language], [MONTH]), ROW11 AS
+    (SELECT        [Sitecode] = PS.[Sitecode], [Language] = PS.[language], [LOB] = PS.LOB, [Month] = PS.[MONTH], [RowSort] = 11, [RowCat] = 'CSAT Phone', [RowValue] = 'Overall', [Result] = [CSAT Phone], 
+                                [Denominator] = [CSAT Phone_denominator], [Target], [Status Vs Target] = CASE WHEN [CSAT Phone] > 0 AND Target > 0 AND [CSAT Phone] > [Target] THEN 1 ELSE 0 END
+      FROM            CSATPHONEALL PS LEFT JOIN
+                                    (SELECT        [Quarter], [Sitecode], [KPI], [LOB], [Channel], Language = [Language], [Target]
+                                      FROM            [glb_ops_bkg_rep].[Dim_Target] CT LEFT JOIN
+                                                                [glb_ops_bkg_rep].[Dim_Language] LN ON CT.LanguageCode = LN.Languagecode
+                                      WHERE        [KPI] = 'Touchpoint' AND Channel = 'Phone') TG ON TG.Language = PS.[Language] AND PS.LOB = TG.LOB AND PS.[sitecode] = TG.[sitecode] AND TG.[Quarter] = PS.YYYYQQ), ROW13 AS
+    (SELECT        [Sitecode] = PS.[Sitecode], [Language] = PS.[language], [LOB] = PS.LOB, [Month] = PS.[MONTH], [RowSort] = 13, [RowCat] = 'CSAT Phone', [RowValue] = 'NH impact', [Result] = [CSAT Phone] - [CSAT PHONE Tenured], 
+                                [Denominator] = NULL, [Target] = NULL, [Status Vs Target] = NULL
+      FROM            CSATPHONEALL PS LEFT JOIN
+                                CSATPHONETenured TN ON PS.sitecode = TN.sitecode AND PS.lob = TN.LOB AND PS.[Language] = TN.[Language] AND PS.[Month] = TN.[Month]), CSATNONPHONETenured AS
+    (SELECT        [Sitecode], LOB, [language], [MONTH], [CSAT Non-PHONE Tenured] = CASE WHEN SUM([csat_denominator]) > 0 THEN SUM([csat_numerator]) / SUM([csat_denominator]) ELSE NULL END
+      FROM            CSAT1
+      WHERE        [Tenure] IN ('New Tenured', 'Tenured') AND [channel] = 'Email'
+      GROUP BY [Sitecode], LOB, [language], [MONTH]), CSATNonPHONEALL AS
+    (SELECT        [Sitecode], LOB, [language], [MONTH], YYYYQQ, [CSAT Non-Phone] = CASE WHEN SUM([csat_denominator]) > 0 THEN SUM([csat_numerator]) / SUM([csat_denominator]) ELSE NULL END, 
+                                [CSAT Non-Phone_denominator] = SUM([csat_denominator])
+      FROM            CSAT1
+      WHERE        [channel] = 'Email'
+      GROUP BY [Sitecode], YYYYQQ, LOB, [language], [MONTH]), ROW14 AS
+    (SELECT        [Sitecode] = PS.[Sitecode], [Language] = PS.[language], [LOB] = PS.LOB, [Month] = PS.[MONTH], [RowSort] = 14, [RowCat] = 'CSAT Non-Phone', [RowValue] = 'Overall', [Result] = [CSAT Non-Phone], 
+                                [Denominator] = [CSAT Non-Phone_denominator], Target, [Status Vs Target] = CASE WHEN [CSAT Non-Phone] > 0 AND Target > 0 AND [CSAT Non-Phone] > [Target] THEN 1 ELSE 0 END
+      FROM            CSATNonPHONEALL PS LEFT JOIN
+                                    (SELECT        [Quarter], [Sitecode], [KPI], [LOB], [Channel], Language = [Language], [Target]
+                                      FROM            [glb_ops_bkg_rep].[Dim_Target] CT LEFT JOIN
+                                                                [glb_ops_bkg_rep].[Dim_Language] LN ON CT.LanguageCode = LN.Languagecode
+                                      WHERE        [KPI] = 'Touchpoint' AND Channel = 'Non-Phone') TG ON TG.Language = PS.[Language] AND PS.LOB = TG.LOB AND PS.[sitecode] = TG.[sitecode] AND TG.[Quarter] = PS.YYYYQQ), ROW16 AS
+    (SELECT        [Sitecode] = PS.[Sitecode], [Language] = PS.[language], [LOB] = PS.LOB, [Month] = PS.[MONTH], [RowSort] = 16, [RowCat] = 'CSAT Non-Phone', [RowValue] = 'NH impact', 
+                                [Result] = [CSAT Non-Phone] - [CSAT Non-PHONE Tenured], [Denominator] = NULL, Target = NULL, [Status Vs Target] = NULL
+      FROM            CSATNonPHONEALL PS LEFT JOIN
+                                CSATNONPHONETenured TN ON PS.sitecode = TN.sitecode AND PS.lob = TN.LOB AND PS.Language = TN.Language AND PS.[Month] = TN.[Month]), 
+/*------------------------------ROW 17-19	CSAT	---------------------------------------------------------------- */ CSATMessagingTenured AS
+    (SELECT        [Sitecode], LOB, [language], [MONTH], [CSAT Messaging Tenured] = CASE WHEN SUM([csat_denominator]) > 0 THEN SUM([csat_numerator]) / SUM([csat_denominator]) ELSE NULL END
+      FROM            CSAT1
+      WHERE        [Tenure] IN ('New Tenured', 'Tenured') AND [channel] = 'Messaging'
+      GROUP BY [Sitecode], LOB, [language], [MONTH]), CSATMessagingALL AS
+    (SELECT        [Sitecode], LOB, [language], [MONTH], YYYYQQ, [CSAT Messaging] = CASE WHEN SUM([csat_denominator]) > 0 THEN SUM([csat_numerator]) / SUM([csat_denominator]) ELSE NULL END, 
+                                [CSAT Messaging_denominator] = SUM([csat_denominator])
+      FROM            CSAT1
+      WHERE        [channel] = 'Messaging'
+      GROUP BY [Sitecode], LOB, [language], [MONTH], YYYYQQ), ROW17 AS
+    (SELECT        [Sitecode] = PS.[Sitecode], [Language] = PS.[language], [LOB] = PS.LOB, [Month] = PS.[MONTH], [RowSort] = 17, [RowCat] = 'CSAT Messaging', [RowValue] = 'Overall', [Result] = [CSAT Messaging], 
+                                [Denominator] = [CSAT Messaging_denominator], [Target], [Status Vs Target] = CASE WHEN [CSAT Messaging] > 0 AND [Target] > 0 AND [CSAT Messaging] > [Target] THEN 1 ELSE 0 END
+      FROM            CSATMessagingALL PS LEFT JOIN
+                                    (SELECT        [Quarter], [Sitecode], [KPI], [LOB], [Channel], [Language] = [Language], [Target]
+                                      FROM            [glb_ops_bkg_rep].[Dim_Target] CT LEFT JOIN
+                                                                [glb_ops_bkg_rep].[Dim_Language] LN ON CT.LanguageCode = LN.Languagecode
+                                      WHERE        [KPI] = 'Touchpoint' AND Channel = 'Messaging') TG ON TG.[Language] = PS.[Language] AND PS.LOB = TG.LOB AND PS.[sitecode] = TG.[sitecode] AND TG.[Quarter] = PS.YYYYQQ), ROW19 AS
+    (SELECT        [Sitecode] = PS.[Sitecode], [Language] = PS.[language], [LOB] = PS.LOB, [Month] = PS.MONTH, [RowSort] = 19, [RowCat] = 'CSAT Messaging', [RowValue] = 'NH impact', 
+                                [Result] = [CSAT Messaging] - [CSAT Messaging Tenured], [Denominator] = NULL, [Target] = NULL, [Status Vs Target] = NULL
+      FROM            CSATMessagingALL PS LEFT JOIN
+                                CSATMessagingTenured TN ON PS.sitecode = TN.sitecode AND PS.lob = TN.LOB AND PS.[Language] = TN.[Language] AND PS.[Month] = TN.[Month]), 
+/*----------------------------AHT- row 20---------------------------------------------------------------*/ AHT1 AS
+    (SELECT        [Date], [Staff], [Handling Time] = avg([Handling Time]), [Count] = count(*)
+      FROM            [glb_ops_bkg_stg].[AHT]
+      WHERE        [Scheduling Channel] IN ('Productive - on phone') AND [date] >=
+                                    (SELECT        dt_from
+                                      FROM            ParamDate) AND [date] <=
+                                    (SELECT        dt_to
+                                      FROM            ParamDate) AND Team NOT IN ('Mario van Tongeren', 'Marit de Wolf') /*!!! Filterig out these 2 managers and their teams.*/ AND Staff NOT IN ('Mario van Tongeren', 'Marit de Wolf')
+      GROUP BY [Date], [Staff]), AHT2 AS
+    (SELECT        [Sitecode] = [Latest Sitecode], [Language] = [Hire Language], [LOB] = CASE WHEN [jobkey] IN ('Outsourced EPS Guest Executive', 'Outsourced EPS Guest Specialist', 'CS Guest Specialist') AND UNB.LOB IS NOT NULL 
+                                THEN UNB.LOB WHEN [jobkey] IN ('Outsourced EPS Guest Executive', 'Outsourced EPS Guest Specialist', 'CS Guest Specialist') THEN 'CSG' WHEN [jobkey] IN ('Outsourced EPS Partner Specialist') THEN 'CSP' ELSE NULL 
+                                END, [Month] = EOMONTH(AHT.[Date]), [AHT] = SUM([Handling Time] * [Count]) / SUM([Count]), [Count] = SUM([Count])
+      FROM            AHT1 AHT LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_Name] N ON N .[Name] = AHT.Staff AND [Date] >= N .[effective date] AND [Date] < N .[Expiration Date] LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_staff_id] ID ON N .staff_id = ID.Staff_id LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_HireLangHistorical] HL ON HL.Staff_id = ID.Staff_id AND AHT.[Date] >= HL.[effective date] AND AHT.[Date] < HL.[Expiration Date] LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_JobkeyHistorical] J ON J.staff_Id = ID.staff_ID AND AHT.[Date] >= J.[effective date] AND AHT.[Date] < J.[Expiration Date] LEFT JOIN
+                                [glb_ops_bkg_rep].[UDV_SupportMatrix_LOB_Unbabel] UNB ON UNB.[LanguageCode] = [Hire Language] AND UNB.[Sitecode] = [Latest Sitecode] AND cast(AHT.[Date] AS date) >= UNB.[ValidFrom] AND cast(AHT.[Date] AS date) 
+                                < UNB.[ValidTo]
+      WHERE        datediff(day, [First Hire Date], AHT.[Date]) > 21
+      GROUP BY EOMONTH([Date]), [Latest Sitecode], [Hire Language], UNB.LOB, Jobkey), AHT3 AS
+    (SELECT        [Sitecode], [Language], [LOB], [Month], [AHT] = SUM([AHT] * [Count]) / SUM([Count]), [Count] = SUM([Count])
+      FROM            AHT2
+      GROUP BY [Sitecode], [Language], [LOB], [Month]), ROW20 AS
+    (SELECT        [Sitecode], [Language], [LOB], [Month], [RowSort] = 20, [RowCat] = 'Supportive Metrics', [RowValue] = 'AHT', [Result] = AHT, [Denominator] = [Count], [Target] = NULL, [Status Vs Target] = NULL
+      FROM            AHT3), /*----------------------------ACW%------row21----------------------------------------------------------*/ ACW1 AS
+    (SELECT        [sitecode], [Language], [LOB], [MONTH] = EOMONTH(M.[date]), [acw_denominator] = SUM([acw_denominator]), acw_numerator = sum(acw_numerator)
+      FROM            CPH11 M
+      GROUP BY [sitecode], [Language], [LOB], EOMONTH(M.[date])), ROW21 AS
+    (SELECT        [Sitecode], [Language], [LOB], [Month], [RowSort] = 21, [RowCat] = 'Supportive Metrics', [RowValue] = 'ACW', [Result] = CASE WHEN sum([acw_denominator]) > 0 THEN sum(acw_numerator) / sum([acw_denominator]) 
+                                ELSE NULL END, [Denominator] = sum([acw_denominator]), [Target] = NULL, [Status Vs Target] = NULL
+      FROM            ACW1
+      GROUP BY [Sitecode], [Language], [LOB], [MONTH]), /*----------------------------Senior Calls,%----row22-----------------------------------------------------------*/ SC1 AS
+    (SELECT        N .staff_id, [MONTH] = EOMONTH([Call Day]), NumberOfRow = count(*)
+      FROM            [glb_ops_bkg_stg].[SeniorDetails] S LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_Name] N ON N .[Name] = S.[Agent Name] AND cast(S.[Call Day] AS date) >= [Effective Date] AND cast(S.[Call Day] AS date) < [Expiration Date] LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_Date] DD ON DD.[Date] = cast(S.[Call Day] AS date) LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_Staff_ID] ID ON ID.Staff_ID = N .staff_id
+      WHERE        S.[Call Day] >=
+                                    (SELECT        dt_from
+                                      FROM            ParamDate) AND S.[Call Day] <=
+                                    (SELECT        MINForSC
+                                      FROM            SenCallDate) AND datediff(day, [First Hire Date], S.[Call Day]) > 21 AND ID.[Latest Manager] NOT IN ('Mario van Tongeren', 'Marit de Wolf') /*!!! Filterig out these 2 managers and their teams.*/ AND 
+                                ID.[Latest Name] NOT IN ('Mario van Tongeren', 'Marit de Wolf')
+      GROUP BY N .staff_id, EOMONTH([Call Day])), MKPSC1 AS
+    (SELECT        M.[sitecode], M.[Language], M.LOB, M.staff_id, [MONTH] = EOMONTH([Date]), [CPH_contacts] = SUM(M.CPH_contacts)
+      FROM            CPH11 M
+      WHERE        M.[date] <=
+                                    (SELECT        MINForSC
+                                      FROM            SenCallDate)
+      GROUP BY M.[sitecode], [Language], M.LOB, M.staff_id, EOMONTH([Date])), SC2 AS
+    (SELECT        [sitecode], A.[Language], A.[LOB], A.staff_id, A.[MONTH], [cpi_contacts] = SUM([CPH_contacts]), [Senior_Calls] = sum(NumberOfRow)
+      FROM            MKPSC1 A LEFT JOIN
+                                SC1 B ON A.[MONTH] = B.[MONTH] AND A.Staff_ID = B.Staff_ID
+      GROUP BY A.[sitecode], A.[Language], A.[LOB], A.Staff_id, A.[MONTH]), Row22 AS
+    (SELECT        [sitecode], [Language], LOB, [MONTH], [RowSort] = 22, [RowCat] = 'Supportive Metrics', [RowValue] = 'SR line %', [Result] = CASE WHEN sum(cast([cpi_contacts] AS decimal(10, 2))) 
+                                > 0 THEN sum(cast([Senior_Calls] AS decimal(10, 2))) / sum(cast([cpi_contacts] AS decimal(10, 2))) ELSE NULL END, [Denominator] = sum([cpi_contacts]), [Target] = NULL, [Status Vs Target] = NULL
+      FROM            SC2
+      GROUP BY [sitecode], [Language], LOB, [MONTH]), /*----------------------Workforce---row 4--------------------------------------------------------------------------------------*/ Workforce1 AS
+    (SELECT        [Week Start], [SiteCode], [Language], [LOB] = CASE WHEN [LOB] = 'UNB' THEN 'Unbabel' ELSE [LOB] END, [Account Assigned Production Heads], [TL HC], [QA HC]
+      FROM            (SELECT        [Week Start] = cast([Week Start] AS Date), [SiteCode] = CASE WHEN [SiteCode] = 'AMS27 WFH' THEN 'AMS27' WHEN [SiteCode] = 'AMS27' AND [LOB] = 'CSG' THEN 'AMS27 WFH' ELSE [SiteCode] END, 
+                                                          [Language] = CASE WHEN [Language] IN ('EN_B2', 'EN_C1') THEN 'EN' ELSE [Language] END, [LOB], [Attribute], [Value] = sum([Value])
+                                FROM            [WFM].[CapPlan] WF
+                                WHERE        [Business Unit] = 'ABU' AND [Attribute] IN ('Account Assigned Production Heads', 'TL HC', 'QA HC') AND LOB IN ('UNB', 'CSG', 'CSP', 'PEGA') AND [Week Start] >=
+                                                              (SELECT        dt_from
+                                                                FROM            ParamDate) AND [Week Start] <=
+                                                              (SELECT        dt_to
+                                                                FROM            ParamDate)
+                                GROUP BY cast([Week Start] AS Date), [SiteCode], [Language], [LOB], [Attribute]) SRC PIVOT (sum([Value]) FOR [Attribute] IN ([Account Assigned Production Heads], [TL HC], [QA HC])) PVT), Workforce2 AS
+    (SELECT        [MONTH] = EOMONTH([Week Start]), [Number of Weeks] = COUNT(DISTINCT [Week Start]), D .[SiteCode], L.[Language]/*,original=D.[Language]*/ , D .[LOB], 
+                                [Account Assigned Production Heads] = SUM([Account Assigned Production Heads]), [TL HC] = SUM([TL HC]), [QA HC] = SUM([QA HC])
+      FROM            Workforce1 D LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_Language] L ON L.languagecode = D .[Language] LEFT JOIN
+                                [glb_ops_bkg_rep].[vHireLanguageMatrix] MT ON MT.[SiteCode] = D .[SiteCode] AND MT.LanguageCode = L.[Language] AND MT.LOB = D .LOB AND [Week Start] >= ValidFrom AND [Week Start] < validto
+      WHERE        MT.Sitecode IS NOT NULL
+      GROUP BY EOMONTH([Week Start]), D .[SiteCode], L.[Language]/* ,D.[Language]*/ , D .[LOB]), Workforce3 AS
+    (SELECT        [MONTH], [SiteCode], [Language], [LOB], [Account Assigned Production Heads] = CASE WHEN SUM([Number of Weeks]) > 0 THEN SUM([Account Assigned Production Heads]) / SUM([Number of Weeks]) ELSE NULL END, 
+                                [TL HC] = CASE WHEN SUM([Number of Weeks]) > 0 THEN SUM([TL HC]) / SUM([Number of Weeks]) ELSE NULL END, [QA HC] = CASE WHEN SUM([Number of Weeks]) > 0 THEN SUM([QA HC]) / SUM([Number of Weeks]) 
+                                ELSE NULL END
+      FROM            Workforce2
+      GROUP BY [MONTH], [SiteCode], [Language], [LOB]), ROW4 AS
+    (SELECT        [Sitecode], [Language], [LOB], [Month], [RowSort] = 4, [RowCat] = 'Workforce', [RowValue] = 'CSR/OH', [Result] = CASE WHEN ([TL HC] + [QA HC]) > 0 THEN [Account Assigned Production Heads] / ([TL HC] + [QA HC]) ELSE NULL 
+                                END, [Denominator] = ([TL HC] + [QA HC]), [Target] = NULL, [Status Vs Target] = NULL
+      FROM            Workforce3
+      WHERE        [Account Assigned Production Heads] > 0), /*----------------------workforce1-----row 2------------------------------------------------------------------------------------*/ PROD11 AS
+    (SELECT        [Week Start], [SiteCode], [Language], [LOB] = CASE WHEN [LOB] = 'UNB' THEN 'Unbabel' ELSE [LOB] END, [Account Assigned Production Heads]
+      FROM            (SELECT        [Week Start] = cast([Week Start] AS Date), [SiteCode] = CASE WHEN [SiteCode] = 'AMS27 WFH' THEN 'AMS27' WHEN [SiteCode] = 'AMS27' AND [LOB] = 'CSG' THEN 'AMS27 WFH' ELSE [SiteCode] END, 
+                                                          [Language] = CASE WHEN [Language] IN ('EN_B2', 'EN_C1') THEN 'EN' ELSE [Language] END, [LOB], [Attribute], [Value] = sum([Value])
+                                FROM            [WFM].[CapPlan] WF
+                                WHERE        [Business Unit] = 'ABU' AND [Attribute] IN ('Account Assigned Production Heads') AND LOB IN ('UNB', 'CSG', 'CSP', 'PEGA') AND [Week Start] >=
+                                                              (SELECT        dt_from
+                                                                FROM            ParamDate) AND [Week Start] <=
+                                                              (SELECT        dt_to
+                                                                FROM            ParamDate)
+                                GROUP BY cast([Week Start] AS Date), [SiteCode], [Language], [LOB], [Attribute]) SRC PIVOT (sum([Value]) FOR [Attribute] IN ([Account Assigned Production Heads])) PVT), PROD22 AS
+    (SELECT        [MONTH] = EOMONTH([Week Start]), [Number of Weeks] = COUNT(DISTINCT [Week Start]), D .[SiteCode], L.[Language]/*,original=D.[Language]*/ , D .[LOB], 
+                                [Account Assigned Production Heads] = SUM([Account Assigned Production Heads])
+      FROM            PROD11 D LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_Language] L ON L.languagecode = D .Language LEFT JOIN
+                                [glb_ops_bkg_rep].[vHireLanguageMatrix] MT ON MT.[SiteCode] = D .[SiteCode] AND MT.LanguageCode = L.[Language] AND MT.LOB = D .LOB AND [Week Start] >= ValidFrom AND [Week Start] < validto
+      WHERE        MT.Sitecode IS NOT NULL
+      GROUP BY EOMONTH([Week Start]), D .[SiteCode], L.[Language]/* ,D.[Language]*/ , D .[LOB]), ROW2 AS
+    (SELECT        [Sitecode], [Language], [LOB], [Month], [RowSort] = 2, [RowCat] = 'Workforce', [RowValue] = 'Overall HC', [Result] = CASE WHEN SUM([Number of Weeks]) > 0 THEN SUM([Account Assigned Production Heads]) 
+                                / SUM([Number of Weeks]) ELSE NULL END, [Denominator] = SUM([Number of Weeks]), [Target] = NULL, [Status Vs Target] = NULL
+      FROM            PROD22
+      GROUP BY [Sitecode], [Language], [LOB], [Month]
+      HAVING         SUM([Account Assigned Production Heads]) > 0), /*------------------------------------usertable- row 23-24-25-----------------------------------------*/ AGENTCOUNT1 AS
+    (SELECT        M.Sitecode, [Language] = [Hire Language], [LOB] = CASE WHEN [jobkey] IN ('Outsourced EPS Guest Executive', 'Outsourced EPS Guest Specialist', 'CS Guest Specialist') AND UNB.LOB IS NOT NULL 
+                                THEN UNB.LOB WHEN [jobkey] IN ('Outsourced EPS Guest Executive', 'Outsourced EPS Guest Specialist', 'CS Guest Specialist') THEN 'CSG' WHEN [jobkey] IN ('Outsourced EPS Partner Specialist') THEN 'CSP' ELSE NULL 
+                                END, [MONTH] = EOMONTH(M.[date]), M.Staff_id, tenure_days = max(tenure_days)
+      FROM            [glb_ops_bkg_stg].[UserTable_Fact] M LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_HireLangHistorical] HL ON HL.Staff_id = M.[staff_id] AND cast(M.Date AS date) >= [Effective Date] AND cast(M.Date AS date) < [Expiration Date] LEFT JOIN
+                                [glb_ops_bkg_rep].[UDV_SupportMatrix_LOB_Unbabel] UNB ON UNB.[LanguageCode] = [Hire Language] AND UNB.[Sitecode] = M.[Sitecode] AND M.[Date] >= UNB.[ValidFrom] AND M.[Date] < UNB.[ValidTo] LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_Staff_ID] ID ON ID.Staff_ID = M.staff_id
+      WHERE        jobkey IN ('Outsourced EPS Guest Executive', 'Outsourced EPS Guest Specialist', 'CS Guest Specialist', 'Outsourced EPS Partner Specialist') AND M.[date] >=
+                                    (SELECT        dt_from
+                                      FROM            ParamDate) AND M.[date] <=
+                                    (SELECT        dt_to
+                                      FROM            ParamDate) AND ID.[Latest Manager] NOT IN ('Mario van Tongeren', 'Marit de Wolf') /*!!! Filterig out these 2 managers and their teams.*/ AND ID.[Latest Name] NOT IN ('Mario van Tongeren', 'Marit de Wolf')
+      GROUP BY M.Sitecode, [Hire Language], EOMONTH(M.[date]), M.Staff_id, [jobkey], UNB.LOB), RoW23 AS
+    (SELECT        [Sitecode], [Language], [LOB], [Month], [RowSort] = 23, [RowCat] = 'Supportive Metrics', [RowValue] = 'Agent Headcount', [Result] = COUNT(DISTINCT Staff_id), [Denominator] = NULL, [Target] = NULL, [Status Vs Target] = NULL
+      FROM            AGENTCOUNT1
+      GROUP BY [Sitecode], [Language], [LOB], [Month]), row24 AS
+    (SELECT        [Sitecode], [Language], [LOB], [Month], [RowSort] = 24, [RowCat] = 'Supportive Metrics', [RowValue] = 'Tenure', [Result] = COUNT(DISTINCT Staff_id), [Denominator] = NULL, [Target] = NULL, [Status Vs Target] = NULL
+      FROM            AGENTCOUNT1
+      WHERE        tenure_days >= 90
+      GROUP BY [Sitecode], [Language], [LOB], [Month]), row25 AS
+    (SELECT        [Sitecode], [Language], [LOB], [Month], [RowSort] = 25, [RowCat] = 'Supportive Metrics', [RowValue] = 'New Hire', [Result] = COUNT(DISTINCT Staff_id), [Denominator] = NULL, Target = NULL, [Status Vs Target] = NULL
+      FROM            AGENTCOUNT1
+      WHERE        tenure_days < 90
+      GROUP BY [Sitecode], [Language], [LOB], [Month]), row3 AS
+    (SELECT        [Sitecode] = AC.[sitecode], [Language] = AC.[language], [LOB] = AC.LOB, [Month] = AC.[Month], [RowSort] = 3, [RowCat] = 'Workforce', [RowValue] = '% Tenure', [Result] = CASE WHEN AC.Result > 0 THEN cast(T .Result AS float) 
+                                / cast(AC.Result AS float) ELSE 0 END, [Denominator] = NULL, [Target] = NULL, [Status Vs Target] = NULL
+      FROM            RoW23 AC LEFT JOIN
+                                row24 T ON T .[Language] = AC.[language] AND T .lob = AC.lob AND T .Sitecode = AC.Sitecode AND T .[Month] = AC.[Month]), /*----------------------PROD-----------------------------------------------------------------------------------------*/ PROD1 AS
+    (SELECT        [Week Start], [SiteCode], [Language], [LOB] = CASE WHEN [LOB] = 'UNB' THEN 'Unbabel' ELSE [LOB] END, [Total Delivered Productive Hours], [Capacity based Productive Hours], [Budget Productive  Hours]
+      FROM            (SELECT        [Week Start] = cast([Week Start] AS Date), [SiteCode] = CASE WHEN [SiteCode] = 'AMS27 WFH' THEN 'AMS27' WHEN [SiteCode] = 'AMS27' AND [LOB] = 'CSG' THEN 'AMS27 WFH' ELSE [SiteCode] END, 
+                                                          [Language] = CASE WHEN [Language] IN ('EN_B2', 'EN_C1') THEN 'EN' ELSE [Language] END, [LOB], [Attribute], [Value] = sum([Value])
+                                FROM            [WFM].[CapPlan] WF
+                                WHERE        [Business Unit] = 'ABU' AND [Attribute] IN ('Total Delivered Productive Hours', 'Capacity based Productive Hours', 'Budget Productive  Hours') AND LOB IN ('UNB', 'CSG', 'CSP', 'PEGA') AND 
+                                                          cast([Week Start] AS Date) >=
+                                                              (SELECT        dt_from
+                                                                FROM            ParamDate) AND cast([Week Start] AS Date) <=
+                                                              (SELECT        dt_to
+                                                                FROM            ParamDate)
+                                GROUP BY cast([Week Start] AS Date), [SiteCode], [Language], [LOB], [Attribute]) SRC PIVOT (sum([Value]) FOR [Attribute] IN ([Total Delivered Productive Hours], [Capacity based Productive Hours], [Budget Productive  Hours])) 
+                                PVT), PROD2 AS
+    (SELECT        [Week Start], D .[SiteCode], L.[Language]/*,original=D.[Language]*/ , D .[LOB], [Total Delivered] = CASE WHEN sum([Total Delivered Productive Hours]) = 0 THEN sum([Capacity based Productive Hours]) 
+                                ELSE sum([Total Delivered Productive Hours]) END, [Budget Productive  Hours] = SUM([Budget Productive  Hours])
+      FROM            PROD1 D LEFT JOIN
+                                [glb_ops_bkg_rep].[Dim_Language] L ON L.languagecode = D .[Language] LEFT JOIN
+                                [glb_ops_bkg_rep].[vHireLanguageMatrix] MT ON MT.[SiteCode] = D .[SiteCode] AND MT.LanguageCode = L.[Language] AND MT.LOB = D .LOB AND [Week Start] >= ValidFrom AND [Week Start] < validto
+      WHERE        MT.Sitecode IS NOT NULL
+      GROUP BY [Week Start], D .[SiteCode], L.[Language]/* ,D.[Language]*/ , D .[LOB]), PROD2added AS
+    (SELECT        [MONTH] = EOMONTH([Week Start]), [SiteCode], [Language], [LOB], [Total Delivered] = sum([Total Delivered]), [Budget Productive  Hours] = SUM([Budget Productive  Hours])
+      FROM            PROD2 D
+      GROUP BY EOMONTH([Week Start]), [SiteCode], [Language], [LOB]), PROD3 AS
+    (SELECT        [MONTH], [SiteCode], [Language], [LOB], [Productivity,%] = CASE WHEN SUM([Budget Productive  Hours]) = 0 THEN 0 ELSE sum([Total Delivered]) / SUM([Budget Productive  Hours]) END, 
+                                [Budget Productive  Hours] = SUM([Budget Productive  Hours])
+      FROM            PROD2added
+      GROUP BY [MONTH], [SiteCode], [Language], [LOB]), ROW1 AS
+    (SELECT        [Sitecode], [Language], [LOB], [Month], [RowSort] = 1, [RowCat] = 'Prod. Hours', [RowValue] = 'Overall', [Result] = [Productivity,%], [Denominator] = [Budget Productive  Hours], [Target] = 1, 
+                                [Status Vs Target] = CASE WHEN [Productivity,%] > 0 AND [Productivity,%] > 1 THEN 1 ELSE 0 END
+      FROM            PROD3
+      WHERE        [Productivity,%] > 0), /*---------------------------------------PSAT PEER row9-------------------------------------------------------------------*/ Row9 AS
+    (SELECT        [Sitecode], [Language] = CASE WHEN [Language] = 'Portuguese-Brasilian' THEN 'Brazilian' ELSE [Language] END, [LOB], [Month], [[RowSort] = 9, [RowCat] = 'PSAT', [RowValue] = 'vs. peers', 
+                                [Result] = CASE WHEN Result > 0 AND [Peer Result] > 0 THEN Result - [Peer Result] ELSE NULL END, [Denominator] = NULL, [Target] = NULL, [Status Vs Target] = CASE WHEN Result > 0 AND [Peer Result] > 0 AND 
+                                Result >= [Peer Result] THEN 1 WHEN Result > 0 AND [Peer Result] > 0 AND Result < [Peer Result] THEN 0 ELSE NULL END
+      FROM            [glb_ops_bkg_stg].[Partner_PEERKPI_Calculated]
+      WHERE        cast([Month] AS Date) >=
+                                    (SELECT        dt_from
+                                      FROM            ParamDate) AND Measure = 'PSAT'), /*-------------------------------------------------CSATPHONE row12-------------------------------------------------------*/ Row12 AS
+    (SELECT        [Sitecode], [Language] = CASE WHEN [Language] = 'Portuguese-Brasilian' THEN 'Brazilian' ELSE [Language] END, [LOB], [Month], [RowSort] = 12, [RowCat] = 'CSAT Phone', [RowValue] = 'vs. peers', 
+                                [Result] = CASE WHEN Result > 0 AND [Peer Result] > 0 THEN Result - [Peer Result] ELSE NULL END, [Denominator] = NULL, [Target] = NULL, [Status Vs Target] = CASE WHEN Result > 0 AND [Peer Result] > 0 AND 
+                                Result >= [Peer Result] THEN 1 WHEN Result > 0 AND [Peer Result] > 0 AND Result < [Peer Result] THEN 0 ELSE NULL END
+      FROM            [glb_ops_bkg_stg].[Partner_PEERKPI_Calculated]
+      WHERE        Measure = 'CSAT Phone' AND cast([Month] AS Date) >=
+                                    (SELECT        dt_from
+                                      FROM            ParamDate)), /*----------------------------------------CSATNP row15----------------------------------------------------------------*/ Row15 AS
+    (SELECT        [Sitecode], [Language] = CASE WHEN [Language] = 'Portuguese-Brasilian' THEN 'Brazilian' ELSE [Language] END, [LOB], [Month], [RowSort] = 15, [RowCat] = 'CSAT Non-Phone', [RowValue] = 'vs. peers', 
+                                [Result] = CASE WHEN Result > 0 AND [Peer Result] > 0 THEN Result - [Peer Result] ELSE NULL END, [Denominator] = NULL, [Target] = NULL, [Status Vs Target] = CASE WHEN Result > 0 AND [Peer Result] > 0 AND 
+                                Result >= [Peer Result] THEN 1 WHEN Result > 0 AND [Peer Result] > 0 AND Result < [Peer Result] THEN 0 ELSE NULL END
+      FROM            [glb_ops_bkg_stg].[Partner_PEERKPI_Calculated]
+      WHERE        Measure = 'CSAT Non-Phone' AND cast([Month] AS Date) >=
+                                    (SELECT        dt_from
+                                      FROM            ParamDate)), /*----------------------------------------CSATM row18-----------------------------------------------------*/ Row18 AS
+    (SELECT        [Sitecode], [Language] = CASE WHEN [Language] = 'Portuguese-Brasilian' THEN 'Brazilian' ELSE [Language] END, [LOB], [Month], [RowSort] = 18, [RowCat] = 'CSAT Messaging', [RowValue] = 'vs. peers', 
+                                [Result] = CASE WHEN Result > 0 AND [Peer Result] > 0 THEN Result - [Peer Result] ELSE NULL END, [Denominator] = NULL, [Target] = NULL, [Status Vs Target] = CASE WHEN Result > 0 AND [Peer Result] > 0 AND 
+                                Result >= [Peer Result] THEN 1 WHEN Result > 0 AND [Peer Result] > 0 AND Result < [Peer Result] THEN 0 ELSE NULL END
+      FROM            [glb_ops_bkg_stg].[Partner_PEERKPI_Calculated]
+      WHERE        Measure = 'CSAT Messaging' AND cast([Month] AS Date) >=
+                                    (SELECT        dt_from
+                                      FROM            ParamDate)), /*-----------------------------------36	Glidepath Attainment	CPI-----------------------------------------*/ AttainmentCPI AS    (
+
+SELECT
+ [sitecode]
+,LOB
+,Hirelang
+,EOMONTH(M.[date]) AS [Month]
+,CASE WHEN nullif(sum([productive_time]),0) > 0 THEN nullif(sum([cpi_contacts]),0) / nullif(sum([productive_time]),0) ELSE NULL END AS CPI
+,CASE WHEN nullif(sum([productive_time]),0) > 0 THEN nullif(sum([glidpathsTarget] * [productive_time]),0) / nullif(sum([productive_time]),0) ELSE NULL END AS [glidpathsTarget]
+FROM [glb_ops_bkg_stg].[v_MainKPI] AS M 
+LEFT JOIN  [glb_ops_bkg_rep].[Dim_HireLang] AS HL ON HL.HireLangID = M.[HireLang_ID] 
+LEFT JOIN  [glb_ops_bkg_rep].[Dim_LOB] AS L ON L.LOBID = M.[LOB_ID]
+LEFT JOIN  [glb_ops_bkg_rep].[Dim_Date] D ON D .[Date] = M.[Date] 
+LEFT JOIN  [glb_ops_bkg_rep].[Dim_Staff_ID] ID ON ID.Staff_ID = M.staff_id
+WHERE  [WeekFromHireDate] >= 3 AND [WeekFromHireDate] <= 12 AND lob IN ('CSG', 'CSP') AND M.[date] >= (
+SELECT
+ dt_from
+FROM  ParamDate) AND M.[date] <= (
+SELECT
+ dt_to
+FROM  ParamDate) AND ID.[Latest Manager] NOT IN ('Mario van Tongeren', 'Marit de Wolf') /*!!! Filterig out these 2 managers and their teams.*/ 
+AND ID.[Latest Name] NOT IN ('Mario van Tongeren', 'Marit de Wolf')
+GROUP BY 
+ [sitecode]
+,LOB
+,Hirelang
+,EOMONTH(M.[date])
+
+), 
+
+row36 AS  (
+
+SELECT        
+ [sitecode]
+,Hirelang AS [Language]
+,LOB
+,[Month]
+,36 AS [RowSort]
+,'Glidepath Attainment' AS [RowCat]
+,'CPI' AS [RowValue]
+,CASE WHEN [glidpathsTarget] > 0 THEN nullif(CPI / [glidpathsTarget],0) ELSE NULL END AS [Result]
+,[glidpathsTarget] AS [Denominator]
+,1 AS [Target]
+,CASE WHEN CPI / [glidpathsTarget] >= 1 THEN 1 ELSE 0 END AS [Status Vs Target]
+FROM   AttainmentCPI
+
+), 
+
+/*-----------------------------------37-38-39	Glidepath Attainment	CSAT-----------------------------------------*/ 
+
+AttainmentCSAT AS    (
+
+SELECT
+ [sitecode]
+,LOB
+,[Hire Language]
+,EOMONTH(M.[date]) AS [Month]
+,[channel]
+,nullif(cast(SUM([csat_denominator]) AS float),0) AS [csat_denominator]
+,nullif(cast(SUM([csat_numerator]) AS float),0) AS [csat_numerator]
+,CASE WHEN nullif(cast(SUM([csat_denominator]) AS float),0) > 0 THEN nullif(cast(SUM([csat_numerator]) AS float),0) / nullif(cast(SUM([csat_denominator]) AS float),0) ELSE NULL END AS CSAT
+,CASE WHEN nullif(SUM([csat_denominator]),0) > 0 THEN nullif(Round(SUM([csat_denominator] * [glidpathsTarget]),0) / nullif(sum([csat_denominator]), 2),0) ELSE NULL END AS [glidpathsTarget]
+FROM  [glb_ops_bkg_stg].[v_CSAT_CSATDailyView_Test] AS M 
+LEFT JOIN  [glb_ops_bkg_rep].[Dim_Date] AS D ON D .[Date] = M.[Date] 
+LEFT JOIN  [glb_ops_bkg_rep].[Dim_Staff_ID] AS ID ON ID.Staff_ID = M.staff_id
+WHERE [WeekFromHireDate] >= 3 AND [WeekFromHireDate] <= 12 AND M.[date] >= (
+SELECT
+ dt_from
+FROM  ParamDate) AND M.[date] <= (
+SELECT
+dt_to
+FROM  ParamDate) AND [type] = 'Touchpoint' AND ID.[Latest Manager] NOT IN ('Mario van Tongeren', 'Marit de Wolf') /*!!! Filterig out these 2 managers and their teams.*/ 
+AND  ID.[Latest Name] NOT IN ('Mario van Tongeren', 'Marit de Wolf')
+GROUP BY 
+ [sitecode]
+,LOB
+,[Hire Language]
+,EOMONTH(M.[date])
+,[channel]
+
+), 
+
+row37 AS   (
+
+SELECT
+ [sitecode]
+,[Hire Language] AS [Language]
+,LOB
+,[Month]
+,37 AS [RowSort]
+,'Glidepath Attainment' AS [RowCat]
+,'CSAT Phone' AS [RowValue]
+,CASE WHEN [glidpathsTarget] > 0 THEN CSAT / [glidpathsTarget] ELSE NULL END AS [Result]
+,[glidpathsTarget] AS [Denominator]
+,1 AS [Target]
+,CASE WHEN CSAT / [glidpathsTarget] >= 1 THEN 1 ELSE 0 END AS [Status Vs Target]
+FROM AttainmentCSAT
+WHERE  [channel] = 'Phone'
+
+),
+
+row38 AS    (
+
+SELECT
+ [sitecode]
+,[Hire Language] AS [Language]
+,LOB
+,[Month]
+,38 AS [RowSort]
+,'Glidepath Attainment' AS [RowCat]
+,'CSAT Email' AS [RowValue]
+,CASE WHEN [glidpathsTarget] > 0 THEN CSAT / [glidpathsTarget] ELSE NULL END AS [Result]
+,[glidpathsTarget] AS [Denominator]
+,1 AS [Target]
+,CASE WHEN CSAT / [glidpathsTarget] >= 1 THEN 1 ELSE 0 END AS [Status Vs Target]
+FROM AttainmentCSAT
+WHERE [channel] = 'Email'
+
+), 
+
+row39 AS  (
+
+SELECT
+ [sitecode]
+,[Hire Language] AS [Language]
+,LOB AS [LOB]
+,[Month]
+,39 AS [RowSort]
+,'Glidepath Attainment' AS [RowCat]
+,'CSAT Messaging' AS [RowValue]
+,CASE WHEN [glidpathsTarget] > 0 THEN CSAT / [glidpathsTarget] ELSE NULL END AS [Result]
+,[glidpathsTarget] AS [Denominator]
+,1 AS [Target]
+,CASE WHEN CSAT / [glidpathsTarget] >= 1 THEN 1 ELSE 0 END AS [Status Vs Target]
+FROM  AttainmentCSAT
+WHERE [channel] = 'Messaging' 
+
+), 
+
+/*-------------------- 40 Glidepath Attainment PSAT -------------------------------------------------------------------------------------------*/ 
+
+AttainmentPSAT AS    (
+
+SELECT
+ [sitecode]
+,LOB
+,[Hire Language]
+,EOMONTH(P.[date]) AS [Month]
+,CASE WHEN nullif(sum([psat_denominator]),0) > 0 THEN nullif(cast(sum([psat_numerator]) AS float),0) / nullif(cast(sum([psat_denominator]) AS float),0) ELSE NULL END AS PSAT
+,CASE WHEN nullif(sum([psat_denominator]),0) > 0 THEN nullif(sum([glidpathsTarget] * cast([psat_denominator] AS float)),0) / nullif(cast(sum([psat_denominator]) AS float),0) ELSE NULL END AS [glidpathsTarget]
+FROM   [glb_ops_bkg_stg].[v_PSAT_LanguageMatrixView] AS P 
+LEFT JOIN  [glb_ops_bkg_rep].[Dim_Date] AS D ON D .[Date] = P.[Date] 
+LEFT JOIN  [glb_ops_bkg_rep].[Dim_Staff_ID] AS ID ON ID.Staff_ID = P.staff_id
+WHERE [WeekFromHireDate] >= 3 AND [WeekFromHireDate] <= 12 AND P.[date] >=      (
+
+SELECT        dt_from
+                                      FROM            ParamDate) AND P.[date] <=
+                                    (SELECT        dt_to
+                                      FROM            ParamDate) AND ID.[Latest Manager] NOT IN ('Mario van Tongeren', 'Marit de Wolf') /*!!! Filterig out these 2 managers and their teams.*/ AND ID.[Latest Name] NOT IN ('Mario van Tongeren', 'Marit de Wolf')
+      GROUP BY [sitecode], LOB, [Hire Language], EOMONTH(P.[date])), row40 AS
+    (SELECT        [Sitecode] = [sitecode], [Language] = [Hire Language], [LOB] = LOB, [Month], [RowSort] = 40, [RowCat] = 'Glidepath Attainment', [RowValue] = 'PSAT', 
+                                [Result] = CASE WHEN [glidpathsTarget] > 0 THEN PSAT / [glidpathsTarget] ELSE NULL END, [Denominator] = [glidpathsTarget], [Target] = 1, 
+                                [Status Vs Target] = CASE WHEN PSAT / [glidpathsTarget] >= 1 THEN 1 ELSE 0 END
+      FROM            AttainmentPSAT), /*-----------------------------------------------------------------------------------------------------------------------------------------*/ ALLKPI AS
+    (SELECT        *
+      FROM            row1
+      UNION
+      SELECT        *
+      FROM            row2
+      UNION
+      SELECT        *
+      FROM            row3
+      UNION
+      SELECT        *
+      FROM            row4
+      UNION
+      SELECT        *
+      FROM            row5
+      /*Select * from row6*/ UNION
+      SELECT        *
+      FROM            row7
+      UNION
+      SELECT        *
+      FROM            row8
+      UNION
+      SELECT        *
+      FROM            row9
+      UNION
+      SELECT        *
+      FROM            row10
+      UNION
+      SELECT        *
+      FROM            row11
+      UNION
+      SELECT        *
+      FROM            row12
+      UNION
+      SELECT        *
+      FROM            row13
+      UNION
+      SELECT        *
+      FROM            row14
+      UNION
+      SELECT        *
+      FROM            row15
+      UNION
+      SELECT        *
+      FROM            row16
+      UNION
+      SELECT        *
+      FROM            row17
+      UNION
+      SELECT        *
+      FROM            row18
+      UNION
+      SELECT        *
+      FROM            row19
+      UNION
+      SELECT        *
+      FROM            row20
+      UNION
+      SELECT        *
+      FROM            row21
+      UNION
+      SELECT        *
+      FROM            row22
+      UNION
+      SELECT        *
+      FROM            row23
+      UNION
+      SELECT        *
+      FROM            row24
+      UNION
+      SELECT        *
+      FROM            row25
+      UNION
+      SELECT    *
+      FROM            row37
+      UNION 
+      SELECT      *
+      FROM            row38
+      UNION 
+      SELECT    *
+      FROM            row39
+      UNION 
+      SELECT     *
+      FROM            row40
+      UNION ALL
+      SELECT       *
+      FROM            row36)
+    SELECT        *
+     FROM            ALLKPI
+     WHERE        Result IS NOT NULL AND LOB IS NOT NULL AND [Language] IS NOT NULL 
+GO
+
+
